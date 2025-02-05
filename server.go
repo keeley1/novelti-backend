@@ -3,156 +3,86 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 
-	"github.com/gorilla/mux"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 )
 
 type Book struct {
 	Title         string   `json:"title"`
 	Authors       []string `json:"authors"`
 	PublishedDate string   `json:"publishedDate"`
+	Cover         string   `json:"thumbnail"`
 }
 
 func main() {
-	router := mux.NewRouter()
-	router.HandleFunc("/", handler)
-	router.HandleFunc("/books", searchBooks).Methods("GET")
-	router.HandleFunc("/searchbysubject", searchBooksBySubject).Methods("GET")
-	router.HandleFunc("/searchbytitle", searchBooksByTitle).Methods("GET")
+	router := gin.Default()
 
-	fmt.Println("Server starting at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", router))
-}
+	// add CORS middleware
+	config := cors.DefaultConfig()
+	config.AllowOrigins = []string{"http://localhost:3000"}
+	router.Use(cors.New(config))
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "hello world!")
-}
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "Hello World",
+		})
+	})
 
-func searchBooks(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		http.Error(w, "Missing query parameter 'q'", http.StatusBadRequest)
-		return
-	}
+	router.GET("/searchbygenre/:subject", func(c *gin.Context) {
+		genre := c.Param("subject")
+		encodedSubject := url.QueryEscape(genre)
+		googleBooksAPIURL := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=+subject:%s&maxResults=20", encodedSubject)
 
-	// encode query to handle spaces and special characters
-	encodedQuery := url.QueryEscape(query)
-	googleBooksAPIURL := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s", encodedQuery)
-
-	resp, err := http.Get(googleBooksAPIURL)
-	if err != nil {
-		http.Error(w, "Failed to fetch data from Google Books API", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	// read response body
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Failed to read response body", http.StatusInternalServerError)
-		return
-	}
-
-	// print raw response body
-	fmt.Println("Raw API response:", string(body))
-
-	// parse json response
-	var data map[string]interface{}
-	err = json.Unmarshal(body, &data)
-	if err != nil {
-		http.Error(w, "Failed to parse Google Books API response", http.StatusInternalServerError)
-		return
-	}
-
-	items, ok := data["items"].([]interface{})
-	if !ok {
-		http.Error(w, "No items found in Google Books API response", http.StatusNotFound)
-		return
-	}
-
-	var books []Book
-	for _, item := range items {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
+		resp, err := http.Get(googleBooksAPIURL)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Failed to fetch data from Google Books API"})
+			return
 		}
-		volumeInfo, ok := itemMap["volumeInfo"].(map[string]interface{})
-		if !ok {
-			continue
+		defer resp.Body.Close()
+
+		var data map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			c.JSON(500, gin.H{"error": "Failed to parse response body"})
+			return
 		}
 
-		book := Book{
-			Title:         volumeInfo["title"].(string),
-			PublishedDate: volumeInfo["publishedDate"].(string),
-		}
+		// extract and transform the data
+		var books []Book
+		if items, ok := data["items"].([]interface{}); ok {
+			for _, item := range items {
+				volumeInfo, ok := item.(map[string]interface{})["volumeInfo"].(map[string]interface{})
+				if !ok {
+					continue
+				}
 
-		if authors, exists := volumeInfo["authors"].([]interface{}); exists {
-			for _, author := range authors {
-				book.Authors = append(book.Authors, author.(string))
+				book := Book{
+					Title:         volumeInfo["title"].(string),
+					PublishedDate: volumeInfo["publishedDate"].(string),
+				}
+
+				// handle authors array
+				if authors, ok := volumeInfo["authors"].([]interface{}); ok {
+					for _, author := range authors {
+						book.Authors = append(book.Authors, author.(string))
+					}
+				}
+
+				// handle thumbnail
+				if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
+					if thumbnail, ok := imageLinks["thumbnail"].(string); ok {
+						book.Cover = thumbnail
+					}
+				}
+
+				books = append(books, book)
 			}
 		}
 
-		books = append(books, book)
-	}
+		c.JSON(200, books)
+	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(books)
-}
-
-func searchBooksBySubject(w http.ResponseWriter, r *http.Request) {
-	genre := r.URL.Query().Get("subject")
-	if genre == "" {
-		http.Error(w, "Missing query parameter 'subject'", http.StatusBadRequest)
-		return
-	}
-
-	encodedSubject := url.QueryEscape(genre)
-	googleBooksAPIURL := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=+subject:%s&maxResults=20", encodedSubject)
-
-	resp, err := http.Get(googleBooksAPIURL)
-	if err != nil {
-		http.Error(w, "Failed to fetch data from Google Books API", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Failed to read response body", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
-}
-
-func searchBooksByTitle(w http.ResponseWriter, r *http.Request) {
-	title := r.URL.Query().Get("title")
-	if title == "" {
-		http.Error(w, "Missing query parameter 'title'", http.StatusBadRequest)
-		return
-	}
-
-	encodedTitle := url.QueryEscape(title)
-
-	googleBooksAPIURL := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=intitle:%s", encodedTitle)
-	resp, err := http.Get(googleBooksAPIURL)
-	if err != nil {
-		http.Error(w, "Failed to fetch data from Google Books API", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Failed to read response body", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
+	router.Run(":8080")
 }
