@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"sync"
@@ -23,22 +24,24 @@ var (
 )
 
 type Book struct {
-	Title         string   `json:"title"`
-	Authors       []string `json:"authors"`
-	PublishedDate string   `json:"publishedDate"`
-	Cover         string   `json:"thumbnail"`
-	ISBN          string   `json:"isbn"`
-	Description   string   `json:"description"`
+	Title         string        `json:"title"`
+	Authors       []string      `json:"authors"`
+	PublishedDate string        `json:"publishedDate"`
+	Cover         string        `json:"thumbnail"`
+	ID            string        `json:"id"`
+	Description   template.HTML `json:"description"`
 }
 
-func getFromGoogleBooks(query string, searchType string, isDetailed bool) ([]Book, error) {
+func getFromGoogleBooks(query string, searchType string, detailed bool) ([]Book, error) {
 	var googleBooksAPIURL string
-	encodedQuery := url.QueryEscape(query + " books")
 
-	if searchType != "isbn" {
-		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", encodedQuery)
+	if searchType == "id" {
+		// Direct volume endpoint for ID searches
+		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", query)
 	} else {
-		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s:%s&maxResults=20", searchType, encodedQuery)
+		// Regular search endpoint for other types
+		encodedQuery := url.QueryEscape(query + " books")
+		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", encodedQuery)
 	}
 
 	fmt.Println("API URL:", googleBooksAPIURL)
@@ -49,56 +52,33 @@ func getFromGoogleBooks(query string, searchType string, isDetailed bool) ([]Boo
 	}
 	defer resp.Body.Close()
 
-	var data map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %v", err)
-	}
-
 	var books []Book
-	seenISBNs := make(map[string]bool)
 
-	if items, ok := data["items"].([]interface{}); ok {
-		for _, item := range items {
-			volumeInfo, ok := item.(map[string]interface{})["volumeInfo"].(map[string]interface{})
-			if !ok {
-				continue
-			}
+	if searchType == "id" {
+		// Parse single volume response
+		var volumeData map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&volumeData); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %v", err)
+		}
 
-			// check for thumbnail
+		// Get volume info
+		if volumeInfo, ok := volumeData["volumeInfo"].(map[string]interface{}); ok {
+			// Check for thumbnail
 			var thumbnail string
 			if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
-				if thumb, ok := imageLinks["thumbnail"].(string); ok {
-					thumbnail = thumb
+				if _, ok := imageLinks["thumbnail"].(string); ok {
+					// Extract the book ID from the thumbnail URL or use the existing ID
+					bookID := query // we already have the book ID from earlier
+					thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w600-h800&source=gbs_api", bookID)
 				}
 			}
-
 			if thumbnail == "" {
-				continue
+				return nil, fmt.Errorf("no thumbnail available")
 			}
-
-			// check for ISBN
-			hasISBN := false
-			var isbn string
-			if industryIdentifiers, ok := volumeInfo["industryIdentifiers"].([]interface{}); ok {
-				for _, identifier := range industryIdentifiers {
-					if id, ok := identifier.(map[string]interface{}); ok {
-						if id["type"].(string) == "ISBN_13" {
-							hasISBN = true
-							isbn = id["identifier"].(string)
-							break
-						}
-					}
-				}
-			}
-
-			if !hasISBN || seenISBNs[isbn] {
-				continue
-			}
-			seenISBNs[isbn] = true
 
 			book := Book{
 				Title: volumeInfo["title"].(string),
-				ISBN:  isbn,
+				ID:    query,
 				Cover: thumbnail,
 			}
 
@@ -112,13 +92,75 @@ func getFromGoogleBooks(query string, searchType string, isDetailed bool) ([]Boo
 				}
 			}
 
-			if isDetailed {
+			if detailed {
 				if description, ok := volumeInfo["description"].(string); ok {
-					book.Description = description
+					book.Description = template.HTML(description)
 				}
 			}
 
 			books = append(books, book)
+		}
+	} else {
+		// Existing search results parsing code
+		var data map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %v", err)
+		}
+
+		var seenIDs = make(map[string]bool)
+
+		if items, ok := data["items"].([]interface{}); ok {
+			for _, item := range items {
+				id, ok := item.(map[string]interface{})["id"].(string)
+				if !ok || seenIDs[id] {
+					continue
+				}
+				seenIDs[id] = true
+
+				volumeInfo, ok := item.(map[string]interface{})["volumeInfo"].(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				var thumbnail string
+				if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
+					if _, ok := imageLinks["thumbnail"].(string); ok {
+						// Extract the book ID from the thumbnail URL or use the existing ID
+						bookID := id // we already have the book ID from earlier
+						thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w400-h600&source=gbs_api", bookID)
+					}
+				}
+
+				if thumbnail == "" {
+					continue
+				}
+
+				book := Book{
+					Title: volumeInfo["title"].(string),
+					ID:    id,
+					Cover: thumbnail,
+				}
+
+				if publishedDate, ok := volumeInfo["publishedDate"].(string); ok {
+					book.PublishedDate = publishedDate
+				} else {
+					continue
+				}
+
+				if authors, ok := volumeInfo["authors"].([]interface{}); ok {
+					for _, author := range authors {
+						book.Authors = append(book.Authors, author.(string))
+					}
+				}
+
+				if detailed {
+					if description, ok := volumeInfo["description"].(string); ok {
+						book.Description = template.HTML(description)
+					}
+				}
+
+				books = append(books, book)
+			}
 		}
 	}
 
@@ -194,21 +236,30 @@ func main() {
 		c.JSON(200, books)
 	})
 
-	router.GET("/searchbyisbn/:isbn", func(c *gin.Context) {
-		isbn := c.Param("isbn")
+	router.GET("/searchbyid/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		cacheKey := "id:" + id
 
-		if books, found := getFromCache(isbn); found {
+		if books, found := getFromCache(cacheKey); found {
 			c.JSON(200, books)
 			return
 		}
 
-		books, err := getFromGoogleBooks(isbn, "isbn", true)
+		books, err := getFromGoogleBooks(id, "id", true)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 
-		saveToCache(isbn, books)
+		if len(books) == 0 {
+			c.JSON(404, gin.H{
+				"message": fmt.Sprintf("No book found with ID: %s", id),
+				"id":      id,
+			})
+			return
+		}
+
+		saveToCache(cacheKey, books)
 		c.JSON(200, books)
 	})
 
