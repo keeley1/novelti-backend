@@ -36,10 +36,10 @@ func getFromGoogleBooks(query string, searchType string, detailed bool) ([]Book,
 	var googleBooksAPIURL string
 
 	if searchType == "id" {
-		// Direct volume endpoint for ID searches
 		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", query)
+	} else if searchType == "searchquery" {
+		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", query)
 	} else {
-		// Regular search endpoint for other types
 		encodedQuery := url.QueryEscape(query + " books")
 		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", encodedQuery)
 	}
@@ -67,8 +67,7 @@ func getFromGoogleBooks(query string, searchType string, detailed bool) ([]Book,
 			var thumbnail string
 			if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
 				if _, ok := imageLinks["thumbnail"].(string); ok {
-					// Extract the book ID from the thumbnail URL or use the existing ID
-					bookID := query // we already have the book ID from earlier
+					bookID := query
 					thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w600-h800&source=gbs_api", bookID)
 				}
 			}
@@ -101,7 +100,6 @@ func getFromGoogleBooks(query string, searchType string, detailed bool) ([]Book,
 			books = append(books, book)
 		}
 	} else {
-		// Existing search results parsing code
 		var data map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			return nil, fmt.Errorf("failed to parse response: %v", err)
@@ -125,8 +123,7 @@ func getFromGoogleBooks(query string, searchType string, detailed bool) ([]Book,
 				var thumbnail string
 				if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
 					if _, ok := imageLinks["thumbnail"].(string); ok {
-						// Extract the book ID from the thumbnail URL or use the existing ID
-						bookID := id // we already have the book ID from earlier
+						bookID := id
 						thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w400-h600&source=gbs_api", bookID)
 					}
 				}
@@ -233,6 +230,26 @@ func main() {
 		}
 
 		saveToCache(cacheKey, books)
+		c.JSON(200, books)
+	})
+
+	router.GET("/searchbooks/:searchquery", func(c *gin.Context) {
+		searchQuery := c.Param("searchquery")
+
+		encodedQuery := url.QueryEscape(searchQuery)
+
+		if books, found := getFromCache(encodedQuery); found {
+			c.JSON(200, books)
+			return
+		}
+
+		books, err := getFromGoogleBooks(encodedQuery, "searchquery", false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		saveToCache(encodedQuery, books)
 		c.JSON(200, books)
 	})
 
