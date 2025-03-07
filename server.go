@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -13,12 +15,9 @@ import (
 	"github.com/keeley1/novelti-backend/models"
 )
 
-func callGoogleBooksAPI(query string, searchType string, detailed bool) ([]models.Book, error) {
-
-	var googleBooksAPIURL = api.ConstructAPIURL(query, searchType)
-	fmt.Println("API URL:", googleBooksAPIURL)
-
-	resp, err := api.MakeAPICall(googleBooksAPIURL)
+func callGoogleBooksAPI(query string, searchType string, startIndex int, detailed bool) ([]models.Book, error) {
+	fmt.Println("Call api:", startIndex)
+	resp, err := api.MakeAPICall(query, searchType, startIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -53,32 +52,57 @@ func main() {
 
 	router.GET("/searchbygenre/:subject", func(c *gin.Context) {
 		genre := c.Param("subject")
+		startIndexStr := c.Query("startIndex")
+		startIndex := 0
 
-		if books, found := caching.GetFromCache(genre); found {
-			c.JSON(200, books)
-			return
+		// could move this logic to function
+		if startIndexStr != "" {
+			var err error
+			startIndex, err = strconv.Atoi(strings.TrimSpace(startIndexStr))
+			if err != nil || startIndex < 0 {
+				startIndex = 0
+			}
 		}
 
-		books, err := callGoogleBooksAPI(genre, "subject", false)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
+		fmt.Println("Query param:", startIndex)
 
-		caching.SaveToCache(genre, books)
-		c.JSON(200, books)
-	})
-
-	router.GET("/searchbytitle/:title", func(c *gin.Context) {
-		title := c.Param("title")
-		cacheKey := "title:" + title
-
+		// save start index in cache key to ensure correct data is cached
+		cacheKey := fmt.Sprintf("%s:%d", genre, startIndex)
 		if books, found := caching.GetFromCache(cacheKey); found {
 			c.JSON(200, books)
 			return
 		}
 
-		books, err := callGoogleBooksAPI(title, "intitle", false)
+		books, err := callGoogleBooksAPI(genre, "subject", startIndex, false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		caching.SaveToCache(cacheKey, books)
+		c.JSON(200, books)
+	})
+
+	router.GET("/searchbytitle/:title", func(c *gin.Context) {
+		title := c.Param("title")
+		startIndexStr := c.Query("startIndex")
+		startIndex := 0
+
+		if startIndexStr != "" {
+			var err error
+			startIndex, err = strconv.Atoi(strings.TrimSpace(startIndexStr))
+			if err != nil || startIndex < 0 {
+				startIndex = 0
+			}
+		}
+
+		cacheKey := fmt.Sprintf("%s:%d", title, startIndex)
+		if books, found := caching.GetFromCache(cacheKey); found {
+			c.JSON(200, books)
+			return
+		}
+
+		books, err := callGoogleBooksAPI(title, "intitle", startIndex, false)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -90,21 +114,32 @@ func main() {
 
 	router.GET("/searchbooks/:searchquery", func(c *gin.Context) {
 		searchQuery := c.Param("searchquery")
+		startIndexStr := c.Query("startIndex")
+		startIndex := 0
+
+		if startIndexStr != "" {
+			var err error
+			startIndex, err = strconv.Atoi(strings.TrimSpace(startIndexStr))
+			if err != nil || startIndex < 0 {
+				startIndex = 0
+			}
+		}
 
 		encodedQuery := url.QueryEscape(searchQuery)
 
-		if books, found := caching.GetFromCache(encodedQuery); found {
+		cacheKey := fmt.Sprintf("%s:%d", encodedQuery, startIndex)
+		if books, found := caching.GetFromCache(cacheKey); found {
 			c.JSON(200, books)
 			return
 		}
 
-		books, err := callGoogleBooksAPI(encodedQuery, "searchquery", false)
+		books, err := callGoogleBooksAPI(encodedQuery, "searchquery", startIndex, false)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 
-		caching.SaveToCache(encodedQuery, books)
+		caching.SaveToCache(cacheKey, books)
 		c.JSON(200, books)
 	})
 
@@ -117,7 +152,7 @@ func main() {
 			return
 		}
 
-		books, err := callGoogleBooksAPI(id, "id", true)
+		books, err := callGoogleBooksAPI(id, "id", 0, true)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
