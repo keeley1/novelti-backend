@@ -10,27 +10,30 @@ import (
 	"github.com/keeley1/novelti-backend/models"
 )
 
-func ConstructAPIURL(query string, searchType string) string {
+func constructAPIURL(query string, searchType string, startIndex int) string {
 	var googleBooksAPIURL string
+	fmt.Println("Construct api:", startIndex)
 
 	if searchType == "id" {
 		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", query)
 	} else if searchType == "searchquery" {
-		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", query)
+		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20&startIndex=%d", query, startIndex)
 	} else {
 		encodedQuery := url.QueryEscape(query + " books")
-		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20", encodedQuery)
+		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?q=%s&maxResults=20&startIndex=%d", encodedQuery, startIndex)
 	}
 
+	fmt.Println("API URL:", googleBooksAPIURL)
 	return googleBooksAPIURL
 }
 
-func MakeAPICall(apiURL string) (*http.Response, error) {
-	fmt.Println("Calling google books api.....")
+func MakeAPICall(query string, searchType string, startIndex int) (*http.Response, error) {
+	var googleBooksAPIURL = constructAPIURL(query, searchType, startIndex)
 
-	resp, err := http.Get(apiURL)
+	fmt.Println("Calling google books api.....")
+	resp, err := http.Get(googleBooksAPIURL)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to fetch data: %v", err)
+		return nil, fmt.Errorf("failed to fetch data: %v", err)
 	}
 	return resp, err
 }
