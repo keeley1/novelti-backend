@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/keeley1/novelti-backend/api"
 	"github.com/keeley1/novelti-backend/caching"
+	"github.com/keeley1/novelti-backend/database"
 	"github.com/keeley1/novelti-backend/models"
 )
 
@@ -43,6 +44,29 @@ func main() {
 	config := cors.DefaultConfig()
 	config.AllowOrigins = []string{"http://localhost:3000"}
 	router.Use(cors.New(config))
+
+	// initialise database
+	db, err := database.InitialiseDB()
+	if err != nil {
+		fmt.Println("Error: ", err)
+	}
+
+	// ---------- testing db insertion ----------
+	bookID := "hUZWAAAAcAAJ"
+	rating := 4.5
+	user := "userOne"
+
+	// call add book function
+	err = database.AddBook(db, bookID)
+	if err != nil {
+		fmt.Println("Failed to add book:", err)
+	}
+
+	// call add review function
+	err = database.AddBookReview(db, bookID, rating, user)
+	if err != nil {
+		fmt.Println("Failed to add review:", err)
+	}
 
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -107,6 +131,13 @@ func main() {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
+
+		// err1 := database.AddBookRating("some-book-id", 4.5)
+		// if err1 != nil {
+		// 	fmt.Println("Error adding rating:", err)
+		// } else {
+		// 	fmt.Println("Rating added successfully.")
+		// }
 
 		caching.SaveToCache(cacheKey, books)
 		c.JSON(200, books)
