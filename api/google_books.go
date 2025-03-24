@@ -1,18 +1,20 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 
+	"github.com/keeley1/novelti-backend/database"
 	"github.com/keeley1/novelti-backend/models"
 )
 
 func constructAPIURL(query string, searchType string, startIndex int) string {
 	var googleBooksAPIURL string
-	fmt.Println("Construct api:", startIndex)
 
 	if searchType == "id" {
 		googleBooksAPIURL = fmt.Sprintf("https://www.googleapis.com/books/v1/volumes/%s", query)
@@ -48,14 +50,14 @@ func DecodeResponse(resp *http.Response) (map[string]interface{}, error) {
 	return volumeData, nil
 }
 
-func ExtractBookInfo(volumeData map[string]interface{}, searchType string, query string, isDetailed bool) ([]models.Book, error) {
+func ExtractBookInfo(volumeData map[string]interface{}, searchType string, query string, isDetailed bool, db *sql.DB) ([]models.Book, error) {
 	fmt.Println("Extracting book info.....")
 
 	var books []models.Book
 
 	if searchType == "id" {
 		if volumeInfo, ok := volumeData["volumeInfo"].(map[string]interface{}); ok {
-			book := CreateBook(volumeInfo, searchType, query, isDetailed)
+			book := CreateBook(volumeInfo, searchType, query, isDetailed, db)
 			books = append(books, book)
 		}
 	} else {
@@ -69,7 +71,7 @@ func ExtractBookInfo(volumeData map[string]interface{}, searchType string, query
 					}
 					seenIDs[id] = true
 					if volumeInfo, ok := itemMap["volumeInfo"].(map[string]interface{}); ok {
-						book := CreateBook(volumeInfo, searchType, id, isDetailed)
+						book := CreateBook(volumeInfo, searchType, id, isDetailed, db)
 						books = append(books, book)
 					}
 				}
@@ -79,18 +81,36 @@ func ExtractBookInfo(volumeData map[string]interface{}, searchType string, query
 	return books, nil
 }
 
-func CreateBook(volumeInfo map[string]interface{}, searchType string, query string, isDetailed bool) models.Book {
+func CreateBook(volumeInfo map[string]interface{}, searchType string, query string, isDetailed bool, db *sql.DB) models.Book {
 	fmt.Println("Creating book objects.....")
 
 	var thumbnail string
-	if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
-		if _, ok := imageLinks["thumbnail"].(string); ok {
-			bookID := query
-			thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w600-h800&source=gbs_api", bookID)
+
+	// First try to get thumbnail from database
+	dbThumbnail, err := database.GetBookThumbnail(db, query)
+	if err != nil {
+		log.Println("Error querying database for thumbnail:", err)
+	} else if dbThumbnail != "" {
+		thumbnail = dbThumbnail
+		log.Println("Using database thumbnail:", thumbnail)
+	}
+
+	// If no database thumbnail, try to get from volumeInfo
+	if thumbnail == "" {
+		if imageLinks, ok := volumeInfo["imageLinks"].(map[string]interface{}); ok {
+			if _, ok := imageLinks["thumbnail"].(string); ok {
+				thumbnail = fmt.Sprintf("https://books.google.com/books/publisher/content/images/frontcover/%s?fife=w600-h800&source=gbs_api", query)
+				log.Println("Using volumeInfo thumbnail:", thumbnail)
+			} else {
+				log.Println("No thumbnail URL found in imageLinks")
+			}
+		} else {
+			log.Println("No imageLinks found in volumeInfo")
 		}
 	}
+
 	if thumbnail == "" {
-		fmt.Println("No thumbnail available")
+		log.Println("No thumbnail available for book:", query)
 	}
 
 	book := models.Book{
@@ -105,8 +125,14 @@ func CreateBook(volumeInfo map[string]interface{}, searchType string, query stri
 
 	if authors, ok := volumeInfo["authors"].([]interface{}); ok {
 		for _, author := range authors {
-			book.Authors = append(book.Authors, author.(string))
+			if author == nil {
+				book.Authors = append(book.Authors, "Author Unknown")
+			} else {
+				book.Authors = append(book.Authors, author.(string))
+			}
 		}
+	} else {
+		book.Authors = append(book.Authors, "Author Unknown")
 	}
 
 	if isDetailed {

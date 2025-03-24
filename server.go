@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,22 +18,27 @@ import (
 	"github.com/keeley1/novelti-backend/models"
 )
 
-func callGoogleBooksAPI(query string, searchType string, startIndex int, detailed bool) ([]models.Book, error) {
+func callGoogleBooksAPI(query string, searchType string, startIndex int, detailed bool, db *sql.DB) ([]models.Book, error) {
 	fmt.Println("Call api:", startIndex)
+
 	resp, err := api.MakeAPICall(query, searchType, startIndex)
 	if err != nil {
-		return nil, err
+		// log and return error
+		log.Println("Error calling API:", err)
+		return nil, fmt.Errorf("failed to make API call: %w", err)
 	}
 	defer resp.Body.Close()
 
 	volumeData, err := api.DecodeResponse(resp)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		log.Println("Error decoding response:", err)
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	books, err := api.ExtractBookInfo(volumeData, searchType, query, detailed)
+	books, err := api.ExtractBookInfo(volumeData, searchType, query, detailed, db)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		log.Println("Error extracting book information:", err)
+		return nil, fmt.Errorf("failed to extract book information: %w", err)
 	}
 
 	return books, nil
@@ -48,7 +55,7 @@ func main() {
 	// initialise database
 	db, err := database.InitialiseDB()
 	if err != nil {
-		fmt.Println("Error: ", err)
+		log.Println("Error initialising database:", err)
 	}
 
 	// ---------- testing db insertion ----------
@@ -97,7 +104,9 @@ func main() {
 			return
 		}
 
-		books, err := callGoogleBooksAPI(genre, "subject", startIndex, false)
+		// check database
+
+		books, err := callGoogleBooksAPI(genre, "subject", startIndex, false, db)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -126,7 +135,7 @@ func main() {
 			return
 		}
 
-		books, err := callGoogleBooksAPI(title, "intitle", startIndex, false)
+		books, err := callGoogleBooksAPI(title, "intitle", startIndex, false, db)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -164,7 +173,7 @@ func main() {
 			return
 		}
 
-		books, err := callGoogleBooksAPI(encodedQuery, "searchquery", startIndex, false)
+		books, err := callGoogleBooksAPI(encodedQuery, "searchquery", startIndex, false, db)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -183,7 +192,7 @@ func main() {
 			return
 		}
 
-		books, err := callGoogleBooksAPI(id, "id", 0, true)
+		books, err := callGoogleBooksAPI(id, "id", 0, true, db)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -199,6 +208,26 @@ func main() {
 
 		caching.SaveToCache(cacheKey, books)
 		c.JSON(200, books)
+	})
+
+	router.POST("/addthumbnail", func(c *gin.Context) {
+		var request struct {
+			BookID    string `json:"book_id" binding:"required"`
+			Thumbnail string `json:"thumbnail" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+			return
+		}
+
+		err := database.InsertBooks(db, request.BookID, request.Thumbnail)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Thumbnail added successfully"})
 	})
 
 	// ------ TESTING ENDPOINT ------
@@ -222,6 +251,18 @@ func main() {
 
 		fmt.Println(googleBooksAPIURL)
 		c.JSON(200, data)
+	})
+
+	router.GET("/thumbnail/:book_id", func(ctx *gin.Context) {
+		bookID := ctx.Param("book_id")
+
+		thumbnail, err := database.GetBookThumbnail(db, bookID)
+		if err != nil {
+			ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+
+		ctx.JSON(http.StatusOK, gin.H{"thumbnail": thumbnail})
 	})
 
 	router.Run(":8080")

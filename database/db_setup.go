@@ -3,16 +3,15 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 )
 
 func InitialiseDB() (*sql.DB, error) {
-	dsn := "root:root@tcp(127.0.0.1:3306)/"
-	db, err := sql.Open("mysql", dsn)
+	dsn := "host=localhost port=5433 user=postgres password=pass dbname=novelti_db sslmode=disable"
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connection to database failed: %w", err)
 	}
 
 	err = db.Ping()
@@ -20,48 +19,40 @@ func InitialiseDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("connection failed: %w", err)
 	}
 
-	// create db
-	_, err = db.Exec("CREATE DATABASE IF NOT EXISTS novelti_db")
+	// Create tables if they do not exist
+	err = createTables(db)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create database: %w", err)
+		return nil, fmt.Errorf("failed to create tables")
 	}
 
-	// use db
-	_, err = db.Exec("USE novelti_db")
-	if err != nil {
-		return nil, fmt.Errorf("failed to use database: %w", err)
-	}
-
-	// create tables
-	createTables(db)
-
-	fmt.Println("Database setup completed successfully!")
 	return db, nil
 }
 
-func createTables(db *sql.DB) {
-	// define SQL statements for creating tables
+func createTables(db *sql.DB) error {
+	// Define SQL statements for creating tables
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS books (
 			id VARCHAR(255) PRIMARY KEY,
 			thumbnail TEXT
 		);`,
 		`CREATE TABLE IF NOT EXISTS reviews (
-    		id INT AUTO_INCREMENT PRIMARY KEY,
+    		id SERIAL PRIMARY KEY,
     		book_id VARCHAR(255),
     		review_text TEXT,
     		rating FLOAT CHECK (rating BETWEEN 1 AND 5),
     		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    		user VARCHAR(255),
+    		user_name VARCHAR(255),
     		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
 		);`,
 	}
 
-	// execute each table creation statement
+	// Execute each table creation statement
 	for _, table := range tables {
 		_, err := db.Exec(table)
 		if err != nil {
-			log.Fatal("Failed to create table:", err)
+			return fmt.Errorf("error creating database tables: %w", err)
 		}
 	}
+	// return nil if there is no error
+	return nil
 }
