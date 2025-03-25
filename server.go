@@ -23,7 +23,6 @@ func callGoogleBooksAPI(query string, searchType string, startIndex int, detaile
 
 	resp, err := api.MakeAPICall(query, searchType, startIndex)
 	if err != nil {
-		// log and return error
 		log.Println("Error calling API:", err)
 		return nil, fmt.Errorf("failed to make API call: %w", err)
 	}
@@ -55,10 +54,10 @@ func main() {
 	// initialise database
 	db, err := database.InitialiseDB()
 	if err != nil {
-		log.Println("Error initialising database:", err)
+		log.Println("Error: failed initialising database:", err)
 	}
 
-	// ---------- testing db insertion ----------
+	// ---------- testing db reviews insertion ----------
 	bookID := "hUZWAAAAcAAJ"
 	rating := 4.5
 	user := "userOne"
@@ -66,13 +65,13 @@ func main() {
 	// call add book function
 	err = database.AddBook(db, bookID)
 	if err != nil {
-		fmt.Println("Failed to add book:", err)
+		log.Println("Error: failed to add book:", err)
 	}
 
 	// call add review function
 	err = database.AddBookReview(db, bookID, rating, user)
 	if err != nil {
-		fmt.Println("Failed to add review:", err)
+		log.Println("Error: failed to add review:", err)
 	}
 
 	router.GET("/", func(c *gin.Context) {
@@ -95,16 +94,12 @@ func main() {
 			}
 		}
 
-		fmt.Println("Query param:", startIndex)
-
 		// save start index in cache key to ensure correct data is cached
 		cacheKey := fmt.Sprintf("%s:%d", genre, startIndex)
 		if books, found := caching.GetFromCache(cacheKey); found {
 			c.JSON(200, books)
 			return
 		}
-
-		// check database
 
 		books, err := callGoogleBooksAPI(genre, "subject", startIndex, false, db)
 		if err != nil {
@@ -140,13 +135,6 @@ func main() {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-
-		// err1 := database.AddBookRating("some-book-id", 4.5)
-		// if err1 != nil {
-		// 	fmt.Println("Error adding rating:", err)
-		// } else {
-		// 	fmt.Println("Rating added successfully.")
-		// }
 
 		caching.SaveToCache(cacheKey, books)
 		c.JSON(200, books)
